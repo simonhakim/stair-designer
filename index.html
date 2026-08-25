@@ -308,6 +308,21 @@
   svg.dwg text.LTITLE{fill:var(--ink);stroke:none;font-family:"IBM Plex Mono",monospace}
   svg.dwg{min-width:520px}
   svg.dwg.sm{min-width:0}
+  .fixrow td{padding-top:0;font-size:12.5px;color:var(--alert);background:var(--alert-soft)}
+  .way{display:flex;gap:14px;padding:14px 16px;border-bottom:1px solid var(--hair);align-items:flex-start}
+  .way:last-child{border-bottom:0}
+  .wn{flex:0 0 26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;
+      display:flex;align-items:center;justify-content:center;font-family:"IBM Plex Mono",monospace;font-size:13px}
+  .wt{font-family:"IBM Plex Sans Condensed",sans-serif;font-weight:700;font-size:15px;color:var(--ink)}
+  .wapply{flex:0 0 auto;align-self:center;padding:8px 14px;font-size:12px}
+  .histrow{display:flex;gap:6px}
+  .hist{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;
+    background:transparent;border:1px solid var(--hair-strong);color:var(--ink-2);border-radius:3px;
+    padding:4px 7px;cursor:pointer}
+  .hist:hover:not([disabled]){border-color:var(--accent);color:var(--accent)}
+  .hist[disabled]{opacity:.35;cursor:default}
+  .wc{font-family:"IBM Plex Mono",monospace;font-size:13px;color:var(--accent);margin:3px 0 4px}
+  .ww{font-size:13px;color:var(--ink-2);max-width:74ch}
 
   .verdict{display:flex;gap:14px;align-items:flex-start;padding:16px;margin:0;border-bottom:1px solid var(--hair)}
   .verdict.ok{background:var(--ok-soft)}
@@ -375,7 +390,13 @@
     <!-- ================= CONTROLS ================= -->
     <aside>
       <div class="card">
-        <div class="card-h"><span>Shaft</span><span id="shaftTag">clear inside walls</span></div>
+        <div class="card-h">
+          <span>Shaft</span>
+          <span class="histrow">
+            <button class="hist" id="undoBtn" type="button" title="Undo (Ctrl+Z)" disabled>&#8630; Undo</button>
+            <button class="hist" id="redoBtn" type="button" title="Redo (Ctrl+Y)" disabled>&#8631; Redo</button>
+          </span>
+        </div>
         <div class="panel-body">
 
           <div class="field">
@@ -477,6 +498,14 @@
                   <div class="numrow"><input id="minHeadLand" type="number" value="2285" min="1900" max="3000" step="5" aria-label="Minimum headroom over a landing"><span class="unit">land head</span></div>
                   <div class="numrow"><input id="maxRun" type="number" value="3660" min="2000" max="5000" step="10" aria-label="Maximum height between landings"><span class="unit">max run</span></div>
                 </div>
+                <div class="mini" style="margin-top:2px">
+                  <select class="sel" id="round" aria-label="Round suggested shaft sizes to">
+                    <option value="25">round to 25 mm</option>
+                    <option value="50" selected>round to 50 mm</option>
+                    <option value="100">round to 100 mm</option>
+                  </select>
+                  <div></div>
+                </div>
                 <span class="hint">Width 1200 mm up to 2000 persons, 1420 mm above. Headroom is 2030 mm over the flight and 2285 mm over a landing (Figure 3.5).</span>
               </div>
             </div>
@@ -507,6 +536,11 @@
         <div class="card-h"><span>Result</span><span id="resTag">—</span></div>
         <div id="verdict"></div>
         <div class="tiles" id="tiles"></div>
+      </section>
+
+      <section class="card" id="ways" style="display:none">
+        <div class="card-h"><span>Three ways to make it work</span><span id="waysTag">—</span></div>
+        <div id="waysBody"></div>
       </section>
 
       <section class="card">
@@ -581,7 +615,7 @@ over the door landing   H − floor slab</pre>
     flipX:false, flipY:false, roofClosed:true,
     maxR:180, Tpref:280, Ldf:1220, Ldm:1220, well:150, wall:200,
     waist:200, sMid:200, sFloor:400, door:1000, finish:100, railH:900, guardH:1100, railW:60, railOff:100,
-    minW:1200, minHead:2030, minHeadLand:2285, Tmin:280, maxRun:3660
+    minW:1200, minHead:2030, minHeadLand:2285, Tmin:280, maxRun:3660, round:50
   };
 
   function f0(v){ return isFinite(v) ? Math.round(v).toString() : "—"; }
@@ -589,45 +623,152 @@ over the door landing   H − floor slab</pre>
   function fs(v){ return (v < 0 ? "-" : "+") + f0(Math.abs(v)); }
 
   /* ===================== geometry ===================== */
+  // A level is a set of flights whose riser counts need not be equal: moving a
+  // landing up or down is the cheapest way to win headroom, so the design
+  // searches distributions, not just the even split.
   function levelDesign(H, startGi){
-    var out = { H:H, tried:[] };
     var n = Math.max(1, Math.ceil(H / S.maxR)), R = H / n;
     var avail = S.sL - S.Ldf - S.Ldm;
-    function build(N){
-      var base = Math.floor(n/N), rem = n % N, fl = [], i, kmax = base + (rem ? 1 : 0);
-      if(base < 1) return null;
-      var treads = Math.max(1, kmax - 1);
-      var T = S.Tpref;                       // tread is fixed, never squeezed
-      var v = S.waist * Math.sqrt(T*T + R*R) / T;
-      var goingMax = treads * T, y = 0, pairMin = 1e9;
-      for(i=1;i<=N;i++){
-        var k = base + (i <= rem ? 1 : 0), gi = startGi + i - 1;
-        fl.push({ i:i, gi:gi, k:k, rise:k*R, going:Math.max(0,(k-1)*T),
+    var T = S.Tpref;
+    var v = S.waist * Math.sqrt(T*T + R*R) / T;
+    var maxK = Math.floor(avail / T) + 1;                 // risers a flight can hold
+    var needFlight = S.minHead + R + v;                   // pair rise under a flight
+    var needMid    = S.minHeadLand + S.sMid;              // pair rise over a half landing
+    var needFloor  = S.minHeadLand + S.sFloor;            // pair rise over the door landing
+
+    function assess(dist){
+      var N = dist.length, i, worst = 1e9, pairs = [];
+      for(i=0;i<N;i++){
+        var a = dist[i], b = dist[(i+1) % N];             // the level repeats, so it wraps
+        var floorPair = (i === N-1);
+        var rise = (a + b) * R;
+        var need = Math.max(needFlight, floorPair ? needFloor : needMid);
+        pairs.push({ rise:rise, need:need, margin:rise - need, floorPair:floorPair });
+        worst = Math.min(worst, rise - need);
+      }
+      var kmax = Math.max.apply(null, dist);
+      var fits = kmax <= maxK;
+      var run  = kmax * R <= S.maxRun + 1e-9;
+      var even = dist.reduce(function(p,c){ return p + Math.abs(c - n/N); }, 0);
+      return { worst:worst, pairs:pairs, kmax:kmax, fits:fits, run:run, even:even };
+    }
+
+    function search(N){
+      if(N > n) return null;
+      var base = Math.floor(n/N), lo = Math.max(1, base-2), hi = base+2, best = null, any = null, count = 0;
+      var dist = new Array(N);
+      (function rec(i, left){
+        if(count > 800) return;
+        if(i === N-1){
+          if(left < lo || left > hi) return;
+          dist[i] = left; count++;
+          var a = assess(dist.slice());
+          var cand = { dist: dist.slice(), a:a };
+          if(!any || a.worst > any.a.worst + 1e-9) any = cand;
+          if(a.fits && a.run){
+            if(!best || a.worst > best.a.worst + 1e-9 ||
+               (Math.abs(a.worst - best.a.worst) < 1e-9 && a.even < best.a.even)){
+              best = cand;
+            }
+          }
+          return;
+        }
+        for(var k = lo; k <= hi; k++){
+          if(left - k < lo*(N-1-i) || left - k > hi*(N-1-i)) continue;
+          dist[i] = k; rec(i+1, left-k);
+        }
+      })(0, n);
+      best = best || any;            // keep the closest attempt so the failure can be reported
+      if(!best) return null;
+
+      var fl = [], y = 0;
+      best.dist.forEach(function(k, i){
+        var gi = startGi + i;
+        fl.push({ i:i+1, gi:gi, k:k, rise:k*R, going:Math.max(0,(k-1)*T),
                   side:(gi % 2) ? "A" : "B", dir:(gi % 2) ? "far" : "near", y0:y });
         y += k*R;
-      }
-      for(i=0;i<fl.length-1;i++) pairMin = Math.min(pairMin, fl[i].rise + fl[i+1].rise);
-      if(fl.length === 1) pairMin = H;
+      });
+      var kmax = best.a.kmax, treads = Math.max(1, kmax - 1), goingMax = treads * T;
       var surplus = Math.max(0, avail - goingMax);
+      var pairMin = 1e9;
+      best.a.pairs.forEach(function(p){ pairMin = Math.min(pairMin, p.rise); });
       return {
-        N:N, n:n, R:R, T:T, v:v, fl:fl, kmax:kmax, treads:treads, goingMax:goingMax,
+        N:N, n:n, R:R, T:T, v:v, fl:fl, dist:best.dist, kmax:kmax, treads:treads,
+        goingMax:goingMax, pairs:best.a.pairs, worstMargin:best.a.worst,
         Ldf:S.Ldf + surplus/2, Ldm:S.Ldm + surplus/2, pairMin:pairMin,
-        headFlight: pairMin - v, headFar: pairMin - S.sMid, headNear: pairMin - S.sFloor,
+        headFlight: pairMin - R - v, headFar: pairMin - S.sMid, headNear: pairMin - S.sFloor,
         riseMax: kmax * R,
-        okT: T >= S.Tmin - 1e-6 && treads * T <= avail + 1e-6,
-        room: avail - treads * T,
+        okT: treads * T <= avail + 1e-6 && T >= S.Tmin - 1e-6,
         okRun: kmax * R <= S.maxRun + 1e-9,
-        okHead: (pairMin - v) >= S.minHead &&
-                Math.min(pairMin - S.sMid, pairMin - S.sFloor) >= S.minHeadLand
+        okHead: best.a.worst >= -1e-6
       };
     }
-    var forced = 0, cands = [], N;
-    for(N=2; N<=6; N++){ var c = build(N); if(c){ c.score = (c.okT?0:1)+(c.okRun?0:1)+(c.okHead?0:1); cands.push(c); } }
-    out.cands = cands;
+
+    var cands = [], N, c;
+    for(N=2; N<=6; N++){
+      c = search(N);
+      if(c){ c.score = (c.okT?0:1) + (c.okRun?0:1) + (c.okHead?0:1); cands.push(c); }
+    }
     return cands;
   }
 
-  function calc(){
+  /* ============ measured headroom: every walking surface vs everything above it ============ */
+  function clearanceScan(o){
+    var segs = [], iL = S.sL;
+    function seg(band, x0, x1, z0, z1, t, what){
+      segs.push({ band:band, x0:Math.min(x0,x1), x1:Math.max(x0,x1),
+                  za:(x0<=x1?z0:z1), zb:(x0<=x1?z1:z0), t:t, what:what });
+    }
+    o.lv.forEach(function(L, li){
+      // door / intermediate landings at the near end, half landings at the far end
+      L.fl.forEach(function(F){
+        var up = F.dir === "far";
+        var xs = up ? (L.xM - F.going) : L.xM;
+        var xe = up ? L.xM : (L.xM - F.going);
+        var zs = L.ffl + F.y0 + L.R;                 // first nosing
+        var ze = L.ffl + F.y0 + F.rise;              // last nosing = landing level
+        seg(F.side, xs, xe, zs, ze, L.R + L.v, "flight L" + li + "." + F.i);
+        var ly = L.ffl + F.y0 + F.rise;
+        if(up) seg("ALL", L.xM, iL, ly, ly, S.sMid, "half landing L" + li + "." + F.i);
+        else if(F.i < L.N) seg("ALL", 0, L.Ldf, ly, ly, S.sMid, "mid landing L" + li + "." + F.i);
+      });
+      var end = L.doorEnd === "near" ? [0, L.Ldf] : [L.xM, iL];
+      seg("ALL", end[0], end[1], L.ffl, L.ffl, S.sFloor, "floor landing L" + li);
+    });
+    var lastL = o.lv[o.lv.length-1];
+    var arrFar = lastL.fl[lastL.fl.length-1].dir === "far";
+    seg("ALL", arrFar ? lastL.xM : 0, arrFar ? iL : lastL.Ldf, o.top, o.top, S.sFloor, "top floor landing");
+    if(o.roof) seg("ALL", 0, iL, o.roof, o.roof, S.sFloor, "roof slab");
+
+    function zAt(g, x){ return g.za + (g.zb - g.za) * (g.x1 === g.x0 ? 0 : (x - g.x0)/(g.x1 - g.x0)); }
+    var best = { gap: 1e9 }, bestF = { gap: 1e9 }, bestL = { gap: 1e9 }, step = 60, x, b, i, j;
+    ["A","B"].forEach(function(band){
+      for(x = 0; x <= iL; x += step){
+        var here = segs.filter(function(g){
+          return x >= g.x0 - 1e-6 && x <= g.x1 + 1e-6 && (g.band === band || g.band === "ALL");
+        });
+        for(i=0;i<here.length;i++){
+          var zw = zAt(here[i], x);                       // walking surface
+          for(j=0;j<here.length;j++){
+            if(i === j) continue;
+            var zs = zAt(here[j], x) - here[j].t;         // soffit above
+            var gap = zs - zw;
+            if(gap > 120){
+              var rec = { gap:gap, x:x, band:band, over:here[j].what, on:here[i].what, zw:zw };
+              if(gap < best.gap) best = rec;
+              var onFlight = /flight/.test(here[i].what);
+              if(onFlight && gap < bestF.gap) bestF = rec;
+              if(!onFlight && gap < bestL.gap) bestL = rec;
+            }
+          }
+        }
+      }
+    });
+    best.flight = bestF; best.landing = bestL;
+    return best;
+  }
+
+  function calcCore(){
     var o = { valid:true, lv:[] };
     o.W = (S.sW - S.well) / 2;
     if(!(o.W > 0) || !(S.sL > 0) || !S.levels.length){ o.valid = false; return o; }
@@ -643,6 +784,7 @@ over the door landing   H − floor slab</pre>
         pick = cands.filter(function(c){ return c.score === 0; })[0];
         if(!pick){ pick = cands.slice().sort(function(a,b){ return a.score - b.score || a.N - b.N; })[0]; }
       }
+      if(!pick){ o.valid = false; return; }
       var L = pick;
       L.H = H; L.i = idx; L.ffl = ffl; L.auto = !forced;
       L.head = Math.min(L.headFlight, L.headFar, L.headNear);
@@ -661,8 +803,7 @@ over the door landing   H − floor slab</pre>
         var r = [];
         if(!c.okT)    r.push("needs " + f0(c.treads*c.T + S.Ldf + S.Ldm) + " long");
         if(!c.okRun)  r.push("run " + f0(c.riseMax));
-        if(!c.okHead) r.push("headroom " + f0(Math.min(c.headFlight, c.headFar, c.headNear)));
-        if(false) r.push("");
+        if(!c.okHead) r.push("short by " + f0(-c.worstMargin));
         return c.N + "F " + (r.length ? r.join(", ") : "ok");
       }).join(" · ");
       gi += L.N;
@@ -670,6 +811,7 @@ over the door landing   H − floor slab</pre>
       o.lv.push(L);
     });
 
+    if(!o.valid || !o.lv.length) { o.valid = false; return o; }
     o.top = ffl;
     o.roof = o.roofH ? ffl + o.roofH : null;
     o.outerL = S.sL + 2*S.wall;
@@ -728,60 +870,146 @@ over the door landing   H − floor slab</pre>
   }
 
 
-  /* ============ measured headroom: every walking surface vs everything above it ============ */
-  function clearanceScan(o){
-    var segs = [], iL = S.sL;
-    function seg(band, x0, x1, z0, z1, t, what){
-      segs.push({ band:band, x0:Math.min(x0,x1), x1:Math.max(x0,x1),
-                  za:(x0<=x1?z0:z1), zb:(x0<=x1?z1:z0), t:t, what:what });
-    }
-    o.lv.forEach(function(L, li){
-      // door / intermediate landings at the near end, half landings at the far end
-      L.fl.forEach(function(F){
-        var up = F.dir === "far";
-        var xs = up ? (L.xM - F.going) : L.xM;
-        var xe = up ? L.xM : (L.xM - F.going);
-        var zs = L.ffl + F.y0 + L.R;                 // first nosing
-        var ze = L.ffl + F.y0 + F.rise;              // last nosing = landing level
-        seg(F.side, xs, xe, zs, ze, L.R + L.v, "flight L" + li + "." + F.i);
-        var ly = L.ffl + F.y0 + F.rise;
-        if(up) seg("ALL", L.xM, iL, ly, ly, S.sMid, "half landing L" + li + "." + F.i);
-        else if(F.i < L.N) seg("ALL", 0, L.Ldf, ly, ly, S.sMid, "mid landing L" + li + "." + F.i);
-      });
-      var end = L.doorEnd === "near" ? [0, L.Ldf] : [L.xM, iL];
-      seg("ALL", end[0], end[1], L.ffl, L.ffl, S.sFloor, "floor landing L" + li);
-    });
-    var lastL = o.lv[o.lv.length-1];
-    var arrFar = lastL.fl[lastL.fl.length-1].dir === "far";
-    seg("ALL", arrFar ? lastL.xM : 0, arrFar ? iL : lastL.Ldf, o.top, o.top, S.sFloor, "top floor landing");
-    if(o.roof) seg("ALL", 0, iL, o.roof, o.roof, S.sFloor, "roof slab");
 
-    function zAt(g, x){ return g.za + (g.zb - g.za) * (g.x1 === g.x0 ? 0 : (x - g.x0)/(g.x1 - g.x0)); }
-    var best = { gap: 1e9 }, bestF = { gap: 1e9 }, bestL = { gap: 1e9 }, step = 60, x, b, i, j;
-    ["A","B"].forEach(function(band){
-      for(x = 0; x <= iL; x += step){
-        var here = segs.filter(function(g){
-          return x >= g.x0 - 1e-6 && x <= g.x1 + 1e-6 && (g.band === band || g.band === "ALL");
-        });
-        for(i=0;i<here.length;i++){
-          var zw = zAt(here[i], x);                       // walking surface
-          for(j=0;j<here.length;j++){
-            if(i === j) continue;
-            var zs = zAt(here[j], x) - here[j].t;         // soffit above
-            var gap = zs - zw;
-            if(gap > 120){
-              var rec = { gap:gap, x:x, band:band, over:here[j].what, on:here[i].what, zw:zw };
-              if(gap < best.gap) best = rec;
-              var onFlight = /flight/.test(here[i].what);
-              if(onFlight && gap < bestF.gap) bestF = rec;
-              if(!onFlight && gap < bestL.gap) bestL = rec;
-            }
+  function calc(){
+    var o = calcCore();
+    if(o.valid && !o.pass){
+      try { o.ways = scenarios(o); } catch(e){ o.ways = []; o.waysErr = String(e && e.stack || e); }
+      // the static "needed" length assumes the present split; the sweep re-designs,
+      // so quote the length that actually works and say why it is shorter
+      var real = null;
+      (o.ways || []).forEach(function(w){
+        var keys = w.ov ? Object.keys(w.ov) : [];
+        if(keys.length === 1 && keys[0] === "sL") real = w.ov.sL;
+      });
+      if(real){
+        o.checks.forEach(function(c){
+          if(c[0] === "Flight fits the shaft" && !c[3]){
+            c[4] = "Lengthen the shaft to " + f0(real) + " mm clear. " +
+                   "Keeping the present split it would need " + f0(o.minLen) +
+                   " mm, but at " + f0(real) + " mm the tool re-splits the risers between the flights.";
           }
-        }
+        });
       }
-    });
-    best.flight = bestF; best.landing = bestL;
-    return best;
+    }
+    return o;
+  }
+
+  /* ============ three ways out when it does not comply ============ */
+  function withS(ov, fn){
+    var old = {}, k;
+    for(k in ov){ old[k] = S[k]; S[k] = ov[k]; }
+    try { return fn(); } finally { for(k in old) S[k] = old[k]; }
+  }
+  var probeCache = {};
+  function passes(ov){
+    var key = JSON.stringify(ov) + "|" + JSON.stringify(S.levels) + S.sL + S.sW + S.sMid + S.sFloor + S.waist + S.Ldf + S.Ldm;
+    if(key in probeCache) return probeCache[key];
+    var r = withS(ov, function(){ var o = calcCore(); return o.valid && o.pass; });
+    probeCache[key] = r;
+    return r;
+  }
+  function sweep(key, from, to, step, extra){
+    function ok(v){
+      var ov = {}; ov[key] = v;
+      if(extra) for(var k in extra) ov[k] = extra[k];
+      return passes(ov);
+    }
+    var coarse = step * 5, v, hit = null;
+    for(v = from; (step > 0 ? v <= to : v >= to); v += coarse){
+      if(ok(v)){ hit = v; break; }
+    }
+    if(hit === null) return null;
+    for(v = hit - coarse + step; (step > 0 ? v < hit : v > hit); v += step){
+      if(ok(v)) return v;
+    }
+    return hit;
+  }
+  function scenarios(o){
+    var out = [], seen = {};
+    function up(v){ return v === null ? null : Math.ceil(v / S.round) * S.round; }
+    function add(t, c, w, cost, ov){
+      var key = t + c;
+      if(seen[key]) return;
+      seen[key] = 1;
+      out.push({ t:t, c:c, w:w, cost:cost, ov:ov });
+    }
+    // minimum extra length under a set of side tweaks
+    function needLen(extra){
+      var v = sweep("sL", Math.ceil(S.sL/20)*20, S.sL + 5000, 20, extra);
+      return v;
+    }
+    var base = up(needLen(null));
+    if(base) add("Lengthen the shaft",
+      "Clear length " + f0(S.sL) + " \u2192 " + f0(base) + " mm  (+" + f0(base - S.sL) + ")",
+      "Longer flights mean fewer risers per flight and more height between the landings that stack over each other.",
+      base - S.sL, { sL: base });
+
+    if(S.Ldf > 1200 || S.Ldm > 1200){
+      var l2 = up(needLen({ Ldf:1200, Ldm:1200 }));
+      if(l2 && (!base || l2 < base)) add("Trim the landings, then lengthen",
+        "Landings \u2192 1200 mm and clear length " + f0(S.sL) + " \u2192 " + f0(l2) + " mm  (+" + f0(l2 - S.sL) + ")",
+        "A straight-run flight needs no more than 1220 mm of landing along the direction of travel, so the spare length goes to the flight.",
+        (l2 - S.sL) + 100, { Ldf:1200, Ldm:1200, sL:l2 });
+    }
+    var thin = Math.max(120, S.sMid - 60);
+    if(thin < S.sMid){
+      var l3 = up(needLen({ sMid: thin }));
+      if(l3 && (!base || l3 < base)) add("Thin the half landing, then lengthen",
+        "Half-landing slab " + f0(S.sMid) + " \u2192 " + f0(thin) + " mm and clear length \u2192 " + f0(l3) + " mm",
+        "Headroom over a landing is measured to its soffit, so a thinner landing buys clear height directly.",
+        (l3 - S.sL) + 200, { sMid:thin, sL:l3 });
+    }
+    // thinner slabs alone
+    var m = sweep("sMid", S.sMid - 10, 120, -10);
+    if(m !== null) add("Thin the half-landing slab",
+      "Half landing " + f0(S.sMid) + " \u2192 " + f0(m) + " mm",
+      "No change to the shaft — the landing slab simply stops eating the clear height below it.", 150);
+    var fsl = sweep("sFloor", S.sFloor - 10, 150, -10);
+    if(fsl !== null) add("Thin the floor-landing slab",
+      "Door landing slab " + f0(S.sFloor) + " \u2192 " + f0(fsl) + " mm",
+      "The floor slab is the deepest obstruction over the stair below it; check it with the structural engineer.", 300, { sFloor:fsl });
+    // waist
+    var wst = sweep("waist", S.waist - 10, 120, -10);
+    if(wst !== null) add("Thin the flight waist",
+      "Waist " + f0(S.waist) + " \u2192 " + f0(wst) + " mm",
+      "Only affects headroom under a flight, not over a landing.", 260, { waist:wst });
+    // floor height
+    var add2 = null, k;
+    for(k = 10; k <= 2500; k += 10){
+      var lv = S.levels.map(function(x){ return x + k; });
+      if(passes({ levels: lv })){ add2 = k; break; }
+    }
+    if(add2) add("Raise the floor-to-floor height",
+      "Every level +" + f0(add2) + " mm  (" + f0(S.levels[0]) + " \u2192 " + f0(S.levels[0] + add2) + ")",
+      "More height per level puts more distance between the landings that sit over each other.", 500 + add2,
+      { levels: S.levels.map(function(x){ return x + add2; }) });
+    // trim landings AND thin the half landing, then lengthen
+    var l4 = up(needLen({ Ldf:1200, Ldm:1200, sMid: Math.max(120, S.sMid - 60) }));
+    if(l4 && (!base || l4 < base)) add("Trim the landings, thin the half landing, then lengthen",
+      "Landings \u2192 1200 mm, half-landing slab \u2192 " + f0(Math.max(120, S.sMid - 60)) +
+      " mm, clear length \u2192 " + f0(l4) + " mm",
+      "The shortest shaft that still complies, once both the landings and their slab are at the minimum.",
+      (l4 - S.sL) + 250, { Ldf:1200, Ldm:1200, sMid: Math.max(120, S.sMid - 60), sL:l4 });
+    // a lower floor-to-floor, where the level heights are still open
+    var down = null, dk;
+    for(dk = 10; dk <= 1200; dk += 10){
+      var lvd = S.levels.map(function(x){ return x - dk; });
+      if(lvd[0] < 2400) break;
+      if(passes({ levels: lvd })){ down = dk; break; }
+    }
+    if(down) add("Lower the floor-to-floor height",
+      "Every level \u2212" + f0(down) + " mm  (" + f0(S.levels[0]) + " \u2192 " + f0(S.levels[0]-down) + ")",
+      "Fewer risers per level means shorter flights, which is often the only fix when the shaft length is fixed.",
+      600 + down, { levels: S.levels.map(function(x){ return x - down; }) });
+    // width
+    var W = up(sweep("sW", S.sW + 10, S.sW + 2000, 10));
+    if(W) add("Widen the shaft",
+      "Clear width " + f0(S.sW) + " \u2192 " + f0(W) + " mm  (+" + f0(W - S.sW) + ")",
+      "Widening only helps where the flight width or the door swing is what fails.", 400 + (W - S.sW), { sW:W });
+
+    out.sort(function(a,b){ return a.cost - b.cost; });
+    return out.slice(0, 3);
   }
 
   /* ===================== primitives ===================== */
@@ -1264,6 +1492,8 @@ over the door landing   H − floor slab</pre>
     t += tile("Going per flight", f0(L0.goingMax), "mm");
     t += tile("Landings door / half", f0(L0.Ldf) + " / " + f0(L0.Ldm), "mm");
     t += tile("Clear headroom", f0(o.head), "mm");
+    var cells = (t.match(/class="tile/g) || []).length;
+    while(cells % 3 !== 0){ t += '<div class="tile"></div>'; cells++; }
     $("tiles").innerHTML = t;
     $("resTag").textContent = o.lv.length + " levels · " + f0(o.top) + " mm · " + o.area.toFixed(2) + " m²";
 
@@ -1271,6 +1501,7 @@ over the door landing   H − floor slab</pre>
     o.checks.forEach(function(r){
       rows += '<tr><td>'+r[0]+'</td><td class="n">'+r[1]+'</td><td class="n" style="color:var(--ink-3)">'+r[2]+
               '</td><td class="n"><b style="color:'+(r[3]?"var(--ok)":"var(--alert)")+'">'+(r[3]?"PASS":"FAIL")+'</b></td></tr>';
+      if(!r[3]) rows += '<tr class="fixrow"><td colspan="4">' + r[4] + '</td></tr>';
     });
     $("chk").innerHTML = rows + '</tbody>';
     $("checkTag").textContent = o.pass ? "all pass" : o.fails.length + " failing";
@@ -1286,6 +1517,23 @@ over the door landing   H − floor slab</pre>
     });
     $("tbl").innerHTML = tb + '</tbody><tfoot><tr><td>Total</td><td class="n">—</td><td class="n">'+f0(o.top)+
       '</td><td class="n">'+o.n+'</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td><td class="n">—</td></tr></tfoot>';
+
+    var wcard = $("ways");
+    if(!o.pass && o.ways && o.ways.length){
+      var wh = '';
+      o.ways.forEach(function(w, i){
+        wh += '<div class="way"><div class="wn">' + (i+1) + '</div><div style="flex:1"><div class="wt">' + w.t +
+              '</div><div class="wc">' + w.c + '</div><div class="ww">' + w.w + '</div></div>' +
+              (w.ov ? '<button class="ghost solid wapply" data-i="' + i + '" type="button">Apply</button>' : '') +
+              '</div>';
+      });
+      $("waysBody").innerHTML = wh;
+      Array.prototype.forEach.call(document.querySelectorAll(".wapply"), function(b){
+        b.addEventListener("click", function(){ applyWay(+b.dataset.i); });
+      });
+      $("waysTag").textContent = o.ways.length + " options";
+      wcard.style.display = "";
+    } else { wcard.style.display = "none"; }
 
     renderSVG(buildPlan(planSpec(o,"entry")), $("planE"), 640, 430);
     renderSVG(buildPlan(planSpec(o,"typ")),   $("planT"), 640, 430);
@@ -1314,7 +1562,7 @@ over the door landing   H − floor slab</pre>
     Array.prototype.forEach.call(document.querySelectorAll(".lvin"), function(inp){
       inp.addEventListener("input", function(){
         var v = parseFloat(inp.value);
-        if(isFinite(v) && v > 0){ S.levels[+inp.dataset.i] = v; run(false); }
+        if(isFinite(v) && v > 0){ S.levels[+inp.dataset.i] = v; pushHistory(false); run(false); }
       });
     });
     Array.prototype.forEach.call(document.querySelectorAll(".lvf"), function(sel){
@@ -1323,9 +1571,75 @@ over the door landing   H − floor slab</pre>
     Array.prototype.forEach.call(document.querySelectorAll(".lvdel"), function(b){
       b.addEventListener("click", function(){
         if(S.levels.length < 2) return;
-        S.levels.splice(+b.dataset.i,1); S.flights.splice(+b.dataset.i,1); run(true);
+        S.levels.splice(+b.dataset.i,1); S.flights.splice(+b.dataset.i,1); pushHistory(true); run(true);
       });
     });
+  }
+
+  /* ===================== history ===================== */
+  var HKEYS = ["sW","sL","maxR","Tpref","Ldf","Ldm","well","wall","waist","sMid","sFloor",
+               "door","finish","railH","minW","minHead","minHeadLand","maxRun",
+               "flipX","flipY","roofClosed"];
+  var undoStack = [], redoStack = [], lastPush = 0;
+
+  function snapshot(){
+    var o = { levels: S.levels.slice(), flights: S.flights.slice() };
+    HKEYS.forEach(function(k){ o[k] = S[k]; });
+    return o;
+  }
+  function sameSnap(a, b){ return a && b && JSON.stringify(a) === JSON.stringify(b); }
+  function pushHistory(force){
+    var now = Date.now(), snap = snapshot();
+    if(sameSnap(undoStack[undoStack.length-1], snap)) return;
+    if(!force && now - lastPush < 700 && undoStack.length){ undoStack[undoStack.length-1] = snap; }
+    else { undoStack.push(snap); if(undoStack.length > 40) undoStack.shift(); }
+    lastPush = now;
+    redoStack.length = 0;
+    syncHist();
+  }
+  function applySnap(sn){
+    S.levels = sn.levels.slice();
+    S.flights = sn.flights.slice();
+    HKEYS.forEach(function(k){ S[k] = sn[k]; });
+    syncInputs();
+    run(true);
+  }
+  function syncInputs(){
+    HKEYS.forEach(function(k){
+      var el = $(k);
+      if(!el) return;
+      if(el.type === "checkbox") el.checked = !!S[k];
+      else el.value = S[k];
+    });
+    $("flipY").setAttribute("aria-pressed", S.flipY ? "true" : "false");
+    $("flipX").setAttribute("aria-pressed", S.flipX ? "true" : "false");
+  }
+  function syncHist(){
+    $("undoBtn").disabled = undoStack.length < 2;
+    $("redoBtn").disabled = redoStack.length === 0;
+  }
+  function undo(){
+    if(undoStack.length < 2) return;
+    redoStack.push(undoStack.pop());
+    applySnap(undoStack[undoStack.length-1]);
+    syncHist();
+  }
+  function redo(){
+    if(!redoStack.length) return;
+    var sn = redoStack.pop();
+    undoStack.push(sn);
+    applySnap(sn);
+    syncHist();
+  }
+  function applyWay(i){
+    var o = window.__o;
+    if(!o || !o.ways || !o.ways[i] || !o.ways[i].ov) return;
+    pushHistory(true);
+    var ov = o.ways[i].ov, k;
+    for(k in ov){ S[k] = (k === "levels") ? ov[k].slice() : ov[k]; }
+    syncInputs();
+    run(true);
+    pushHistory(true);
   }
 
   /* ===================== wiring ===================== */
@@ -1344,14 +1658,14 @@ over the door landing   H − floor slab</pre>
   [["sW","sW"],["sL","sL"],["maxR","maxR"],["Tpref","Tpref"],["Ldf","Ldf"],["Ldm","Ldm"],
    ["well","well"],["wall","wall"],["waist","waist"],["sMid","sMid"],["sFloor","sFloor"],
    ["door","door"],["finish","finish"],["railH","railH"],["minW","minW"],["minHead","minHead"],["minHeadLand","minHeadLand"],["maxRun","maxRun"]].forEach(function(p){
-    $(p[0]).addEventListener("input", function(){ S[p[1]] = num(p[0], S[p[1]]); run(false); });
+    $(p[0]).addEventListener("input", function(){ S[p[1]] = num(p[0], S[p[1]]); pushHistory(false); run(false); });
   });
 
-  $("roofClosed").addEventListener("change", function(){ S.roofClosed = $("roofClosed").checked; run(false); });
-  $("addLvl").addEventListener("click", function(){ S.levels.push(S.levels[S.levels.length-1]||3200); S.flights.push(0); run(true); });
-  $("sameLvl").addEventListener("click", function(){ var v=S.levels[0]; S.levels=S.levels.map(function(){return v;}); run(true); });
-  $("flipY").addEventListener("click", function(){ S.flipY=!S.flipY; $("flipY").setAttribute("aria-pressed",S.flipY?"true":"false"); run(false); });
-  $("flipX").addEventListener("click", function(){ S.flipX=!S.flipX; $("flipX").setAttribute("aria-pressed",S.flipX?"true":"false"); run(false); });
+  $("roofClosed").addEventListener("change", function(){ S.roofClosed = $("roofClosed").checked; pushHistory(true); run(false); });
+  $("addLvl").addEventListener("click", function(){ S.levels.push(S.levels[S.levels.length-1]||3200); S.flights.push(0); pushHistory(true); run(true); });
+  $("sameLvl").addEventListener("click", function(){ var v=S.levels[0]; S.levels=S.levels.map(function(){return v;}); pushHistory(true); run(true); });
+  $("flipY").addEventListener("click", function(){ S.flipY=!S.flipY; $("flipY").setAttribute("aria-pressed",S.flipY?"true":"false"); pushHistory(true); run(false); });
+  $("flipX").addEventListener("click", function(){ S.flipX=!S.flipX; $("flipX").setAttribute("aria-pressed",S.flipX?"true":"false"); pushHistory(true); run(false); });
 
   $("copyBtn").addEventListener("click", function(){
     var o = window.__o; if(!o || !o.valid) return;
@@ -1404,7 +1718,18 @@ over the door landing   H − floor slab</pre>
     $("dxfHint").textContent = "Three plans, the section and a title block on named layers. In this viewer the file saves as .dxf.txt — rename it to .dxf.";
   }
 
+  $("round").addEventListener("change", function(){ S.round = parseInt($("round").value,10) || 50; run(false); });
+  $("undoBtn").addEventListener("click", undo);
+  $("redoBtn").addEventListener("click", redo);
+  document.addEventListener("keydown", function(e){
+    var meta = e.ctrlKey || e.metaKey;
+    if(!meta) return;
+    if(e.key === "z" && !e.shiftKey){ e.preventDefault(); undo(); }
+    else if((e.key === "y") || (e.key === "z" && e.shiftKey)){ e.preventDefault(); redo(); }
+  });
+
   run(true);
+  pushHistory(true);
 })();
 </script>
 </body>
